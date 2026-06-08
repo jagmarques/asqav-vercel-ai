@@ -10,11 +10,11 @@ This is a pre-execution gate. The guard runs at tool-execution time, signs `tool
 
 ## How it hooks in
 
-The Vercel AI SDK defines a tool as `tool({ description, inputSchema, execute })`, where `execute` is `async (input, { toolCallId, messages, abortSignal }) => result`. The guard wraps `execute` only. It never touches your schema, so it works whether your `ai` version names the schema field `inputSchema` (v5/v6) or `parameters` (v4). A tool with no `execute` (a client-side or provider-executed tool) is returned unchanged.
+The Vercel AI SDK defines a tool as `tool({ description, inputSchema, execute })`, where `execute` is `async (input, { toolCallId, messages, abortSignal }) => result`. The guard wraps `execute` only. It never touches your schema, so it works whether your `ai` version names the schema field `inputSchema` on v5 and v6 or `parameters` on v4. A tool with no `execute`, meaning a client-side or provider-executed tool, is returned unchanged.
 
-References (cold-verified):
-- [Tools foundation](https://ai-sdk.dev/docs/foundations/tools) (`inputSchema`, `execute`)
-- [Tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling) (`execute` second arg: `toolCallId`, `messages`, `abortSignal`)
+References, cold-verified:
+- [Tools foundation](https://ai-sdk.dev/docs/foundations/tools), covering `inputSchema` and `execute`
+- [Tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling), covering the `execute` second argument `toolCallId`, `messages`, and `abortSignal`
 
 ## Install
 
@@ -82,11 +82,11 @@ const guarded = asqavGuard(refund, { agent, toolName: "refund" });
 
 `wrapTools(tools, options)` and `asqavGuard(tool, options)` accept:
 
-- `agent` (required): a pre-built Asqav `Agent` from `@asqav/sdk`.
+- `agent`, required: a pre-built Asqav `Agent` from `@asqav/sdk`.
 - `toolName`: the name on the signed receipt. `wrapTools` defaults to each tool's key.
-- `block` (default `true`): when a sign is refused, throw so the tool never runs. Set `false` for observe-only signing.
+- `block`, defaulting to `true`: when a sign is refused, throw so the tool never runs. Set `false` for observe-only signing.
 - `preflight`: a custom `(actionType, input) => { allowed, reason }` check. Defaults to `agent.preflight`, which checks revocation, suspension, and active policies.
-- `failClosed` (default `false`): when a signing transport error occurs, block the tool. The default is fail-open so an unreachable Asqav never breaks a working agent. A real deny still blocks regardless.
+- `failClosed`, defaulting to `false`: when a signing transport error occurs, block the tool. The default is fail-open so an unreachable Asqav never breaks a working agent. A real deny still blocks regardless.
 - `onError`: sink for signing transport errors. Defaults to `console.warn`.
 
 ## How blocking works
