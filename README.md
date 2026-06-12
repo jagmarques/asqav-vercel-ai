@@ -6,6 +6,8 @@
 
 Stop a rogue agent before it acts, and prove what it tried. This package guards [Vercel AI SDK](https://ai-sdk.dev) tool calls with Asqav. It signs the intended tool call before the tool's `execute` runs, and blocks the call when Asqav refuses. Every attempt becomes a tamper-evident receipt, signed server-side with NIST FIPS 204 ML-DSA-65. The agent never holds the signing key, so it cannot forge the record.
 
+Asqav governs the agents you wire through it. An agent that never routes through the governed path produces no receipt and is not detected.
+
 This is a pre-execution gate. The guard runs at tool-execution time, signs `tool:start`, and throws when a call is refused so the tool never executes.
 
 ## How it hooks in
