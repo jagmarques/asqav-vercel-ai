@@ -60,6 +60,20 @@ describe("asqavGuard", () => {
     expect(result).toBe("done");
   });
 
+  it("fails open when a custom preflight throws", async () => {
+    const { agent, sign } = mockAgent();
+    const execute = vi.fn().mockResolvedValue("done");
+    const preflight = vi.fn().mockRejectedValue(new Error("preflight unavailable"));
+    const guarded = asqavGuard({ execute }, { agent, toolName: "lookup", preflight });
+
+    const result = await guarded.execute!({ q: "status" }, { toolCallId: "c1" });
+
+    expect(preflight).toHaveBeenCalledWith("tool:start:lookup", { q: "status" });
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith({ q: "status" }, { toolCallId: "c1" });
+    expect(result).toBe("done");
+  });
+
   it("fails closed when failClosed is set and signing throws", async () => {
     const sign = vi.fn().mockRejectedValue(new Error("network down"));
     const { agent } = mockAgent({ sign });
