@@ -117,10 +117,10 @@ async function runPreflight(
   actionType: string,
   input: unknown,
 ): Promise<GuardDecision> {
-  if (opts.preflight) {
-    return opts.preflight(actionType, input);
-  }
   try {
+    if (opts.preflight) {
+      return await opts.preflight(actionType, input);
+    }
     const result = await opts.agent.preflight(actionType);
     return {
       allowed: result.cleared,
