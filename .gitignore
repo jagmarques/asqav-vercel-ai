@@ -30,5 +30,3 @@ CLAUDE.md
 .env
 .env.*
 !.env.example
-# Local development files kept out of the published tree
-CHANGELOG.md
