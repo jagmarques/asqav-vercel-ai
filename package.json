@@ -6,7 +6,7 @@
   "license": "MIT",
   "author": "Asqav <info@asqav.com>",
   "homepage": "https://asqav.com",
-  "repository": { "type": "git", "url": "https://github.com/jagmarques/asqav-vercel-ai.git" },
+  "repository": { "type": "git", "url": "git+https://github.com/jagmarques/asqav-vercel-ai.git" },
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -18,7 +18,7 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts --clean",
     "prepare": "npm run build",
@@ -26,6 +26,7 @@
     "lint": "tsc --noEmit"
   },
   "engines": { "node": ">=18" },
+  "publishConfig": { "access": "public" },
   "dependencies": {
     "@asqav/sdk": "^0.8.0"
   },
