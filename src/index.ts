@@ -150,7 +150,7 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
   const actionType = `tool:start:${toolName}`;
 
   const guardedExecute = async (input: unknown, execOptions: unknown): Promise<unknown> => {
-    // 1. Optional preflight: a hard deny here blocks before any permit signs.
+    // Optional preflight: a hard deny here blocks before any permit signs.
     const pre = await runPreflight(options, actionType, input);
     if (!pre.allowed) {
       const reason = pre.reason ?? (pre.reasons && pre.reasons.join("; ")) ?? "preflight refused";
@@ -159,7 +159,7 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
       }
     }
 
-    // 2. Sign the intended tool call. The receipt records what the agent
+    // Sign the intended tool call. The receipt records what the agent
     //    tried, before it runs.
     try {
       await options.agent.sign({
@@ -177,7 +177,7 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
       // Fail-open: continue to the real execute.
     }
 
-    // 3. Run the real tool only when allowed.
+    // Run the real tool only when allowed.
     return original(input, execOptions);
   };
 
