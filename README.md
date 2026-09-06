@@ -14,6 +14,8 @@ The guard runs at tool-execution time and signs `tool:start:<toolName>`. With `b
 
 The Vercel AI SDK defines a tool as `tool({ description, inputSchema, execute })`, where `execute` is `async (input, { toolCallId, messages, abortSignal }) => result`. The guard wraps `execute` and preserves the tool's schema fields and types, including `inputSchema` or `parameters`. A tool with no `execute`, meaning a client-side or provider-executed tool, is returned unchanged.
 
+This wrapper supports tools that return a value or a Promise. Async-generator and other `AsyncIterable` tool results are not supported; their streamed values will not be consumed through this wrapper.
+
 References:
 - [Tools foundation](https://ai-sdk.dev/docs/foundations/tools), covering `inputSchema` and `execute`
 - [Tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling), covering the `execute` second argument `toolCallId`, `messages`, and `abortSignal`
