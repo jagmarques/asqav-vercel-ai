@@ -1,18 +1,14 @@
 /**
  * Asqav guard for the Vercel AI SDK.
  *
- * Wraps a tool's `execute` so Asqav signs the intended tool call before the
- * real `execute` runs, and can block a refused call by throwing. This is a
- * pre-execution gate: stop a rogue agent before it acts, and prove what it
- * tried.
+ * Wraps a tool's `execute` to request a receipt before the tool runs.
+ * Refusals block execution by default; `failClosed` controls outages.
  *
- * The Vercel AI SDK `tool()` shape (cold-verified against the current docs):
+ * The Vercel AI SDK `tool()` shape:
  *   tool({ description, inputSchema, execute })
  * where `execute` is
  *   async (input, { toolCallId, messages, abortSignal }) => result
- * Older AI SDK majors named the schema field `parameters`; this guard never
- * reads the schema, it only wraps `execute`, so it is schema-field agnostic
- * and works across `ai` v3/v4/v5/v6.
+ * The guard preserves schema fields such as `inputSchema` and `parameters`.
  *
  * Source URLs verified:
  *   - https://ai-sdk.dev/docs/foundations/tools
@@ -24,7 +20,7 @@
  *      experimental_context)
  */
 
-import { Agent } from "@asqav/sdk";
+import type { Agent } from "@asqav/sdk";
 
 /**
  * Minimal structural type for a Vercel AI SDK tool. We only need `execute`;
@@ -41,9 +37,19 @@ export interface AiTool {
 
 export type ToolSet = Record<string, AiTool>;
 
+/** Preserve schema fields and account for the guard awaiting synchronous tools. */
+type GuardedExecute<T> = T extends (...args: infer Args) => infer Result
+  ? (...args: Args) => Promise<Awaited<Result>> : T;
+
+export type GuardedTool<T extends AiTool> = {
+  [Key in keyof T]: Key extends "execute" ? GuardedExecute<T[Key]> : T[Key];
+};
+
+export type GuardedTools<T extends ToolSet> = { [Name in keyof T]: GuardedTool<T[Name]> };
+
 /**
- * The decision an Asqav sign yields for a tool call. `allowed` is the gate:
- * when false the wrapped `execute` never runs.
+ * The preflight decision for a tool call. When `allowed` is false and
+ * `block` is true, the wrapped `execute` never runs.
  */
 export interface GuardDecision {
   allowed: boolean;
@@ -64,8 +70,8 @@ export interface AsqavGuardOptions {
   toolName?: string;
   /**
    * When true (default), a refused sign throws and the tool never executes
-   * (pre-execution gate). When false, the call is signed for the audit trail
-   * but always allowed to run (observe-only).
+   * (pre-execution gate). When false, refusals do not block execution
+   * (observe-only). Signing can fail without producing a receipt.
    */
   block?: boolean;
   /**
@@ -75,16 +81,14 @@ export interface AsqavGuardOptions {
    */
   preflight?: (actionType: string, input: unknown) => Promise<GuardDecision> | GuardDecision;
   /**
-   * Error sink for signing failures. Signing is fail-open by default: a
-   * network error does not block the tool. Set `failClosed: true` to block
-   * instead.
+   * Error sink for signing failures, including refusals. A callback exception
+   * cannot replace an enforced block; otherwise it propagates.
    */
   onError?: (err: unknown, ctx: { toolName: string }) => void;
   /**
-   * When true, a signing transport error blocks the tool (fail-closed).
-   * Defaults to false (fail-open): governance must not break a working agent
-   * when Asqav is unreachable. A refused sign (a real deny) still blocks
-   * regardless of this flag.
+   * When true, a signing outage or other failure without an explicit refusal
+   * blocks the tool (fail-closed).
+   * Defaults to false. Explicit refusals follow `block` regardless of this flag.
    */
   failClosed?: boolean;
 }
@@ -107,10 +111,31 @@ function defaultOnError(err: unknown, ctx: { toolName: string }): void {
   console.warn(`[asqav/vercel-ai] sign failed for tool '${ctx.toolName}':`, err);
 }
 
+/** Match the SDK's named error contract across its separate CJS/ESM classes.
+ * Network failures use status 0; timeouts and rate limits are outages.
+ * Other 4xx responses reject signing, including revoked agents (400). */
+function isSigningRefusal(err: unknown): err is Error {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AuthenticationError" || err.name === "DetectorBlockedError") return true;
+  return err.name === "APIError" && "statusCode" in err
+    && typeof err.statusCode === "number"
+    && err.statusCode >= 400 && err.statusCode < 500
+    && err.statusCode !== 408 && err.statusCode !== 429;
+}
+
+function validateTool(tool: AiTool): void {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+    throw new TypeError("tool must be an object");
+  }
+  if (tool.execute !== undefined && typeof tool.execute !== "function") {
+    throw new TypeError("tool.execute must be a function when supplied");
+  }
+}
+
 /**
  * Run the configured preflight. Defaults to `agent.preflight`, mapping its
- * `PreflightResult` onto a `GuardDecision`. Fail-open: a preflight transport
- * error never blocks on its own (the signing step is the hard gate).
+ * `PreflightResult` onto a `GuardDecision`. A thrown exception falls through
+ * to signing; a returned refusal follows `block`, including incomplete SDK checks.
  */
 async function runPreflight(
   opts: AsqavGuardOptions,
@@ -138,10 +163,15 @@ async function runPreflight(
  * runs. A tool with no `execute` (a client-side or provider-executed tool) is
  * returned unchanged.
  */
-export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
+export function asqavGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions): GuardedTool<T> {
+  validateTool(tool);
   const original = tool.execute;
   if (typeof original !== "function") {
-    return tool;
+    return tool as GuardedTool<T>;
+  }
+
+  if (typeof options?.agent?.sign !== "function") {
+    throw new TypeError("options.agent must provide a sign method");
   }
 
   const toolName = options.toolName ?? "tool";
@@ -159,8 +189,7 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
       }
     }
 
-    // Sign the intended tool call. The receipt records what the agent
-    //    tried, before it runs.
+    // Request a receipt for the intended tool call before it runs.
     try {
       await options.agent.sign({
         actionType,
@@ -170,9 +199,17 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
         ...(pre.allowed ? {} : { reason: "policy_blocked" as const }),
       });
     } catch (err) {
-      onError(err, { toolName });
-      if (options.failClosed) {
-        throw new AsqavBlockedError(toolName, "signing unavailable (fail-closed)");
+      const refused = isSigningRefusal(err);
+      try {
+        onError(err, { toolName });
+      } finally {
+        // A diagnostic callback cannot override an enforced refusal.
+        if (refused && block) {
+          throw new AsqavBlockedError(toolName, `signing refused: ${err.message}`);
+        }
+        if (!refused && options.failClosed) {
+          throw new AsqavBlockedError(toolName, "signing unavailable (fail-closed)");
+        }
       }
       // Fail-open: continue to the real execute.
     }
@@ -181,7 +218,7 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
     return original(input, execOptions);
   };
 
-  return { ...tool, execute: guardedExecute };
+  return { ...tool, execute: guardedExecute } as GuardedTool<T>;
 }
 
 /**
@@ -203,13 +240,16 @@ export function asqavGuard(tool: AiTool, options: AsqavGuardOptions): AiTool {
  *     tools: wrapTools({ refund, lookupOrder }, { agent }),
  *   });
  */
-export function wrapTools(
-  tools: ToolSet,
+export function wrapTools<T extends ToolSet>(
+  tools: T,
   options: AsqavGuardOptions,
-): ToolSet {
+): GuardedTools<T> {
+  if (!tools || typeof tools !== "object" || Array.isArray(tools)) {
+    throw new TypeError("tools must be an object mapping names to tools");
+  }
   const out: ToolSet = {};
   for (const [name, tool] of Object.entries(tools)) {
     out[name] = asqavGuard(tool, { ...options, toolName: options.toolName ?? name });
   }
-  return out;
+  return out as GuardedTools<T>;
 }
