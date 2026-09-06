@@ -262,3 +262,17 @@ describe("wrapTools", () => {
     expect(sign.mock.calls[0][0]).toMatchObject({ toolName: "refund" });
   });
 });
+
+it("types optional execute methods as returning promises", async () => {
+  const { agent } = mockAgent();
+  const tool: { execute?: (input: { amount: number }) => number } = {
+    execute: ({ amount }) => amount,
+  };
+  const guarded = asqavGuard(tool, { agent });
+  const wrapped = wrapTools({ optional: tool }, { agent });
+  type Execute = ((input: { amount: number }) => Promise<number>) | undefined;
+  expectTypeOf(guarded.execute).toEqualTypeOf<Execute>();
+  expectTypeOf(wrapped.optional.execute).toEqualTypeOf<Execute>();
+  await expect(guarded.execute!({ amount: 50 })).resolves.toBe(50);
+  await expect(wrapped.optional.execute!({ amount: 50 })).resolves.toBe(50);
+});

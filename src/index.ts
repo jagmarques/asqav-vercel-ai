@@ -38,9 +38,12 @@ export interface AiTool {
 export type ToolSet = Record<string, AiTool>;
 
 /** Preserve schema fields and account for the guard awaiting synchronous tools. */
-export type GuardedTool<T extends AiTool> = T extends {
-  execute: (...args: infer Args) => infer Result;
-} ? Omit<T, "execute"> & { execute: (...args: Args) => Promise<Awaited<Result>> } : T;
+type GuardedExecute<T> = T extends (...args: infer Args) => infer Result
+  ? (...args: Args) => Promise<Awaited<Result>> : T;
+
+export type GuardedTool<T extends AiTool> = {
+  [Key in keyof T]: Key extends "execute" ? GuardedExecute<T[Key]> : T[Key];
+};
 
 export type GuardedTools<T extends ToolSet> = { [Name in keyof T]: GuardedTool<T[Name]> };
 
