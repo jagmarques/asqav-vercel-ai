@@ -4,26 +4,28 @@
 
 # @asqav/vercel-ai
 
-Stop a rogue agent before it acts, and prove what it tried. This package guards [Vercel AI SDK](https://ai-sdk.dev) tool calls with Asqav. It signs the intended tool call before the tool's `execute` runs, and blocks the call when Asqav refuses. Every attempt becomes a tamper-evident receipt, signed server-side with NIST FIPS 204 ML-DSA-65. The agent never holds the signing key, so it cannot forge the record.
+This package guards [Vercel AI SDK](https://ai-sdk.dev) tool calls with Asqav. It requests a signed receipt before the tool's `execute` runs and blocks signing refusals by default. Successful signing produces a receipt signed server-side with ML-DSA-65; a refused request or an outage can leave no receipt. The agent never holds the signing key.
 
 Asqav governs the agents you wire through it. An agent that never routes through the governed path produces no receipt and is not detected.
 
-This is a pre-execution gate. The guard runs at tool-execution time, signs `tool:start`, and throws when a call is refused so the tool never executes.
+The guard runs at tool-execution time and signs `tool:start:<toolName>`. With `block: true`, a preflight or signing refusal throws before the tool executes. Set `failClosed: true` to also block during a signing outage.
 
 ## How it hooks in
 
-The Vercel AI SDK defines a tool as `tool({ description, inputSchema, execute })`, where `execute` is `async (input, { toolCallId, messages, abortSignal }) => result`. The guard wraps `execute` only. It never touches your schema, so it works whether your `ai` version names the schema field `inputSchema` on v5 and v6 or `parameters` on v4. A tool with no `execute`, meaning a client-side or provider-executed tool, is returned unchanged.
+The Vercel AI SDK defines a tool as `tool({ description, inputSchema, execute })`, where `execute` is `async (input, { toolCallId, messages, abortSignal }) => result`. The guard wraps `execute` and preserves the tool's schema fields and types, including `inputSchema` or `parameters`. A tool with no `execute`, meaning a client-side or provider-executed tool, is returned unchanged.
 
-References, cold-verified:
+References:
 - [Tools foundation](https://ai-sdk.dev/docs/foundations/tools), covering `inputSchema` and `execute`
 - [Tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling), covering the `execute` second argument `toolCallId`, `messages`, and `abortSignal`
 
 ## Install
 
-Not yet published to npm. Install from GitHub or a local path:
+Use Node.js 20.19.0 or newer on the 20.x line, or Node.js 22.12.0 or newer. The package supports ESM `import` and CommonJS `require`.
+
+The npm release `0.1.0` can execute a tool after signing is refused. Install from GitHub or a local path to use the refusal handling described here:
 
 ```bash
-npm install github:jagmarques/asqav-vercel-ai
+npm install github:jagmarques/asqav-vercel-ai '@asqav/sdk@^0.10.10'
 ```
 
 Or clone and add as a local path dependency:
@@ -36,12 +38,18 @@ git clone https://github.com/jagmarques/asqav-vercel-ai.git
 {
   "dependencies": {
     "@asqav/vercel-ai": "file:../asqav-vercel-ai",
-    "@asqav/sdk": "^0.5.5"
+    "@asqav/sdk": "^0.10.10"
   }
 }
 ```
 
 ## Quick start
+
+This example uses AI SDK 7 and its OpenAI provider, which require Node.js 22 or newer; use Node.js 22.12.0 or newer with this package. Configure `ASQAV_API_KEY` and `OPENAI_API_KEY` before running it.
+
+```bash
+npm install 'ai@^7' '@ai-sdk/openai@^4' 'zod@^4'
+```
 
 ```ts
 import { generateText } from "ai";
@@ -66,9 +74,8 @@ const refund = tool({
 const result = await generateText({
   model: openai("gpt-4o"),
   prompt: "Refund order 1234 for 50 dollars",
-  // Every tool call is signed before it runs. A refused call throws and
-  // the tool never executes.
-  tools: wrapTools({ refund }, { agent }),
+  // Require successful signing before the refund runs.
+  tools: wrapTools({ refund }, { agent, failClosed: true }),
 });
 ```
 
@@ -86,15 +93,17 @@ const guarded = asqavGuard(refund, { agent, toolName: "refund" });
 
 - `agent`, required: a pre-built Asqav `Agent` from `@asqav/sdk`.
 - `toolName`: the name on the signed receipt. `wrapTools` defaults to each tool's key.
-- `block`, defaulting to `true`: when a sign is refused, throw so the tool never runs. Set `false` for observe-only signing.
-- `preflight`: a custom `(actionType, input) => { allowed, reason }` check. Defaults to `agent.preflight`, which checks revocation, suspension, and active policies.
-- `failClosed`, defaulting to `false`: when a signing transport error occurs, block the tool. The default is fail-open so an unreachable Asqav never breaks a working agent. A real deny still blocks regardless.
-- `onError`: sink for signing transport errors. Defaults to `console.warn`.
+- `block`, defaulting to `true`: block preflight and signing refusals. Set `false` to observe refusals and let the tool run; signing may produce no receipt. `failClosed` still controls outages in this mode.
+- `preflight`: a custom `(actionType, input) => { allowed, reason }` check. Defaults to `agent.preflight`, which checks revocation, suspension, and active policies. The SDK can return a refusal when those checks cannot complete; this follows `block`, regardless of `failClosed`. A thrown preflight exception falls through to signing.
+- `failClosed`, defaulting to `false`: block when signing fails because of a network error, timeout, rate limit, server error, or another failure without an explicit refusal. With the default, the tool can run without a receipt. Signing refusals follow `block` regardless of `failClosed`.
+- `onError`: sink for signing errors, including refusals. Defaults to `console.warn`. A callback that throws cannot replace an enforced `AsqavBlockedError`; when the guard allows execution, a callback exception still propagates.
 
 ## How blocking works
 
-When the guard blocks, it throws `AsqavBlockedError`. The Vercel AI SDK surfaces a thrown `execute` as a failed tool result, so the model sees the block and can react. The receipt for the refused call records `policy_decision: "deny"`, giving you proof of what the agent tried.
+When the guard blocks, it throws `AsqavBlockedError`. The Vercel AI SDK surfaces a thrown `execute` as a failed tool result, so the model can see the block. The guard honors SDK authentication errors, detector blocks, and HTTP 4xx signing errors except timeouts (408) and rate limits (429). This includes revoked or suspended agents, which the signing API rejects with HTTP 400.
+
+A preflight refusal blocks before signing, so this guard creates no receipt for that attempt. A signing refusal also does not guarantee a receipt. With `block: false`, a preflight deny requests a receipt with `policy_decision: "deny"` and `reason: "policy_blocked"`; that request can still fail.
 
 ## License
 
-MIT
+[Elastic License 2.0](LICENSE)
