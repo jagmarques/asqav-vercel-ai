@@ -39,10 +39,19 @@ export type ToolSet = Record<string, AiTool>;
 
 /** Preserve schema fields and account for the guard awaiting synchronous tools. */
 type GuardedExecute<T> = T extends (...args: infer Args) => infer Result
-  ? (...args: Args) => Promise<Awaited<Result>> : T;
+  ? (this: ThisParameterType<T>, ...args: Args) => Promise<Exclude<Awaited<Result>, AsyncIterable<unknown>>> : T;
 
 export type GuardedTool<T extends AiTool> = {
   [Key in keyof T]: Key extends "execute" ? GuardedExecute<T[Key]> : T[Key];
+};
+
+type StreamItem<T> = unknown extends T ? unknown : T extends AsyncIterable<infer Item> ? Item : never;
+type StreamGuardedExecute<T> = T extends (...args: infer Args) => infer Result
+  ? (this: ThisParameterType<T>, ...args: Args) => AsyncGenerator<StreamItem<Awaited<Result>>, void, unknown>
+  : T;
+
+export type StreamGuardedTool<T extends AiTool> = {
+  [Key in keyof T]: Key extends "execute" ? StreamGuardedExecute<T[Key]> : T[Key];
 };
 
 export type GuardedTools<T extends ToolSet> = { [Name in keyof T]: GuardedTool<T[Name]> };
@@ -163,11 +172,11 @@ async function runPreflight(
  * runs. A tool with no `execute` (a client-side or provider-executed tool) is
  * returned unchanged.
  */
-export function asqavGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions): GuardedTool<T> {
+function prepareExecution(tool: AiTool, options: AsqavGuardOptions) {
   validateTool(tool);
   const original = tool.execute;
   if (typeof original !== "function") {
-    return tool as GuardedTool<T>;
+    return undefined;
   }
 
   if (typeof options?.agent?.sign !== "function") {
@@ -179,7 +188,8 @@ export function asqavGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions
   const onError = options.onError ?? defaultOnError;
   const actionType = `tool:start:${toolName}`;
 
-  const guardedExecute = async (input: unknown, execOptions: unknown): Promise<unknown> => {
+  return async function guardedExecute(this: unknown, ...args: unknown[]): Promise<unknown> {
+    const [input] = args;
     // Optional preflight: a hard deny here blocks before any permit signs.
     const pre = await runPreflight(options, actionType, input);
     if (!pre.allowed) {
@@ -215,10 +225,44 @@ export function asqavGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions
     }
 
     // Run the real tool only when allowed.
-    return original(input, execOptions);
+    return Reflect.apply(original, this, args);
   };
 
-  return { ...tool, execute: guardedExecute } as GuardedTool<T>;
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return value !== null && (typeof value === "object" || typeof value === "function")
+    && Symbol.asyncIterator in value && typeof value[Symbol.asyncIterator] === "function";
+}
+
+/** Guard tools that return a value or Promise. Use asqavStreamGuard for streams. */
+export function asqavGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions): GuardedTool<T> {
+  const execute = prepareExecution(tool, options);
+  if (!execute) return tool as GuardedTool<T>;
+  return { ...tool, async execute(this: unknown, ...args: unknown[]) {
+    const result = await execute.apply(this, args);
+    if (isAsyncIterable(result)) {
+      throw new TypeError("AsyncIterable tool results require asqavStreamGuard");
+    }
+    return result;
+  } } as GuardedTool<T>;
+}
+
+/**
+ * Guard an AsyncIterable tool. The first iteration runs preflight and signing
+ * before calling the tool; each yielded value then passes through unchanged.
+ * Consumer cancellation and stream errors follow the underlying iterator.
+ */
+export function asqavStreamGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions): StreamGuardedTool<T> {
+  const execute = prepareExecution(tool, options);
+  if (!execute) return tool as StreamGuardedTool<T>;
+  return { ...tool, async *execute(this: unknown, ...args: unknown[]) {
+    const result = await execute.apply(this, args);
+    if (!isAsyncIterable(result)) {
+      throw new TypeError("asqavStreamGuard requires an AsyncIterable tool result");
+    }
+    yield* result;
+  } } as StreamGuardedTool<T>;
 }
 
 /**
