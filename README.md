@@ -14,7 +14,7 @@ The guard runs at tool-execution time and signs `tool:start:<toolName>`. With `b
 
 The Vercel AI SDK defines a tool as `tool({ description, inputSchema, execute })`, where `execute` is `async (input, { toolCallId, messages, abortSignal }) => result`. The guard wraps `execute` and preserves the tool's schema fields and types, including `inputSchema` or `parameters`. A tool with no `execute`, meaning a client-side or provider-executed tool, is returned unchanged.
 
-This wrapper supports tools that return a value or a Promise. Async-generator and other `AsyncIterable` tool results are not supported; their streamed values will not be consumed through this wrapper.
+Use `asqavGuard` or `wrapTools` for tools that return a value or a Promise. Use `asqavStreamGuard` for async generators and other `AsyncIterable` results. Choose the wrapper from the tool's output contract: a mismatched result throws after the guarded tool is invoked.
 
 References:
 - [Tools foundation](https://ai-sdk.dev/docs/foundations/tools), covering `inputSchema` and `execute`
@@ -89,9 +89,34 @@ import { asqavGuard } from "@asqav/vercel-ai";
 const guarded = asqavGuard(refund, { agent, toolName: "refund" });
 ```
 
+## Stream tool results
+
+The `execute` returned by `asqavStreamGuard` returns an async iterator immediately. Its first iteration runs preflight and signing before invoking the tool, then forwards each yielded value. AI SDK uses the last yielded value as the final result. One signing attempt covers the intended call; individual chunks are not separately signed.
+
+```ts
+import { asqavStreamGuard } from "@asqav/vercel-ai";
+
+const progress = tool({
+  description: "Count completed steps",
+  inputSchema: z.object({ steps: z.number().int().min(1).max(10) }),
+  async *execute({ steps }) {
+    for (let completed = 1; completed <= steps; completed++) {
+      yield { completed };
+    }
+  },
+});
+
+const tools = {
+  refund: asqavGuard(refund, { agent, toolName: "refund", failClosed: true }),
+  progress: asqavStreamGuard(progress, { agent, toolName: "progress", failClosed: true }),
+};
+```
+
+Pass this mixed tool set directly to `generateText` or `streamText`. `wrapTools` is for value and Promise tools. A stream closed before its first iteration causes no signing or tool call. Once iteration starts, stopping consumption forwards iterator cleanup; it cannot undo completed work or interrupt a pending operation. The tool receives the original execution options, including its abort signal and context, and remains responsible for honoring cancellation.
+
 ## Options
 
-`wrapTools(tools, options)` and `asqavGuard(tool, options)` accept:
+`wrapTools(tools, options)`, `asqavGuard(tool, options)` and `asqavStreamGuard(tool, options)` accept:
 
 - `agent`, required: a pre-built Asqav `Agent` from `@asqav/sdk`.
 - `toolName`: the name on the signed receipt. `wrapTools` defaults to each tool's key.
