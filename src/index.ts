@@ -37,7 +37,7 @@ export interface AiTool {
 
 export type ToolSet = Record<string, AiTool>;
 
-/** Preserve schema fields and account for the guard awaiting synchronous tools. */
+/** Preserve schema fields while the guard awaits synchronous tools */
 type GuardedExecute<T> = T extends (...args: infer Args) => infer Result
   ? (this: ThisParameterType<T>, ...args: Args) => Promise<Exclude<Awaited<Result>, AsyncIterable<unknown>>> : T;
 
@@ -97,7 +97,7 @@ export interface AsqavGuardOptions {
   /**
    * When true, a signing outage or other failure without an explicit refusal
    * blocks the tool (fail-closed).
-   * Defaults to false. Explicit refusals follow `block` regardless of this flag.
+   * Defaults to false; explicit refusals always follow `block`.
    */
   failClosed?: boolean;
 }
@@ -144,7 +144,7 @@ function validateTool(tool: AiTool): void {
 /**
  * Run the configured preflight. Defaults to `agent.preflight`, mapping its
  * `PreflightResult` onto a `GuardDecision`. A thrown exception falls through
- * to signing; a returned refusal follows `block`, including incomplete SDK checks.
+ * to signing; refusals follow `block`, including incomplete SDK checks.
  */
 async function runPreflight(
   opts: AsqavGuardOptions,
@@ -162,7 +162,7 @@ async function runPreflight(
       reasons: result.reasons,
     };
   } catch {
-    // Preflight is best-effort; the sign call is the authoritative gate.
+    // Signing remains authoritative when preflight is unavailable
     return { allowed: true };
   }
 }
@@ -190,7 +190,7 @@ function prepareExecution(tool: AiTool, options: AsqavGuardOptions) {
 
   return async function guardedExecute(this: unknown, ...args: unknown[]): Promise<unknown> {
     const [input] = args;
-    // Optional preflight: a hard deny here blocks before any permit signs.
+    // A preflight denial can block before any permit is signed
     const pre = await runPreflight(options, actionType, input);
     if (!pre.allowed) {
       const reason = pre.reason ?? (pre.reasons && pre.reasons.join("; ")) ?? "preflight refused";
@@ -199,7 +199,6 @@ function prepareExecution(tool: AiTool, options: AsqavGuardOptions) {
       }
     }
 
-    // Request a receipt for the intended tool call before it runs.
     try {
       await options.agent.sign({
         actionType,
@@ -213,7 +212,7 @@ function prepareExecution(tool: AiTool, options: AsqavGuardOptions) {
       try {
         onError(err, { toolName });
       } finally {
-        // A diagnostic callback cannot override an enforced refusal.
+        // A diagnostic callback cannot override an enforced refusal
         if (refused && block) {
           throw new AsqavBlockedError(toolName, `signing refused: ${err.message}`);
         }
@@ -221,10 +220,8 @@ function prepareExecution(tool: AiTool, options: AsqavGuardOptions) {
           throw new AsqavBlockedError(toolName, "signing unavailable (fail-closed)");
         }
       }
-      // Fail-open: continue to the real execute.
     }
 
-    // Run the real tool only when allowed.
     return Reflect.apply(original, this, args);
   };
 
@@ -235,7 +232,7 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     && Symbol.asyncIterator in value && typeof value[Symbol.asyncIterator] === "function";
 }
 
-/** Guard tools that return a value or Promise. Use asqavStreamGuard for streams. */
+/** Guard value or Promise results; use asqavStreamGuard for streams */
 export function asqavGuard<T extends AiTool>(tool: T, options: AsqavGuardOptions): GuardedTool<T> {
   const execute = prepareExecution(tool, options);
   if (!execute) return tool as GuardedTool<T>;

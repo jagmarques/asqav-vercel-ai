@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { APIError, AuthenticationError, DetectorBlockedError, RateLimitError, type Agent } from "@asqav/sdk";
 import { asqavGuard, wrapTools, AsqavBlockedError } from "../src/index.js";
 
-// The SDK's CommonJS and ESM bundles construct different error classes.
+// The SDK's CommonJS and ESM bundles construct different error classes
 const cjsSdk = createRequire(import.meta.url)("@asqav/sdk") as typeof import("@asqav/sdk");
 
 /**
