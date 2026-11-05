@@ -10,7 +10,7 @@ on:
 jobs:
   publish:
     name: Publish to npm
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, hz-ci-light]
     permissions:
       id-token: write # OIDC token for npm provenance
       contents: read
